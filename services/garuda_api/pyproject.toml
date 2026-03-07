@@ -1,0 +1,17 @@
+[project]
+name = "garuda-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-jose[cryptography]",
+    "requests",
+    "python-dotenv",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "pydantic",
+    "pydantic-settings"
+]
