@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: garuda-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://backend:8000
+    networks:
+      - garuda-network
+    stdin_open: true
+    tty: true
+
+  # Backend Service
+  backend:
+    build:
+      context: ./services/garuda_api
+      dockerfile: Dockerfile
+    container_name: garuda-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/garuda_api:/app
+    env_file:
+      - ./services/garuda_api/.env
+    environment:
+      - FRONTEND_URL=http://frontend:5173
+    networks:
+      - garuda-network
+    stdin_open: true
+    tty: true
+    depends_on:
+      - frontend
+
+networks:
+  garuda-network:
+    driver: bridge
