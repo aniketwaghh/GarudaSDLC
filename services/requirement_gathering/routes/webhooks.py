@@ -10,6 +10,7 @@ from datetime import datetime
 from core.database import get_db
 from core import models
 from schemas import CompleteEvent, FailedEvent
+from utils.vector_store import get_vector_store
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -142,6 +143,25 @@ async def handle_completed_event(event_data: CompleteEvent, db: Session):
                 if transcript_files.get("json"):
                     meeting.transcript_local_path = transcript_files["json"]
                     print(f"✓ Whisper transcription saved for bot: {event_data.bot_id}")
+                
+                # Process TSV transcript and store in vector database
+                if transcript_files.get("tsv"):
+                    try:
+                        print(f"📊 Processing transcript for vector storage...")
+                        vector_store = get_vector_store()
+                        tsv_path = Path(transcript_files["tsv"])
+                        
+                        num_chunks = await vector_store.process_and_store_transcript(
+                            tsv_path=tsv_path,
+                            bot_id=event_data.bot_id,
+                            meeting_id=str(meeting.id),
+                            project_id=str(meeting.project_id),
+                        )
+                        print(f"✓ Stored {num_chunks} transcript chunks in vector database")
+                    except Exception as vec_err:
+                        print(f"⚠ Failed to store in vector database: {str(vec_err)}")
+                        # Don't fail the entire process if vectorization fails
+                        
             except Exception as e:
                 print(f"⚠ Whisper transcription failed: {str(e)}")
                 # Fallback to MeetingBaaS transcription if available

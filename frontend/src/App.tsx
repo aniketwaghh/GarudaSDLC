@@ -7,6 +7,7 @@ import { Workspaces } from "@/pages/Workspaces"
 import { Projects } from "@/pages/Projects"
 import { ProjectDetail } from "@/pages/ProjectDetail"
 import { RequirementGathering } from "@/pages/RequirementGathering"
+import { Chat } from "@/pages/Chat"
 import { NotFound } from "@/pages/NotFound"
 
 function App() {
@@ -60,6 +61,15 @@ function App() {
           element={
             <ProtectedRoute>
               <RequirementGathering />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/workspace/:workspaceId/project/:projectId/chat"
+          element={
+            <ProtectedRoute>
+              <Chat />
             </ProtectedRoute>
           }
         />

@@ -28,6 +28,8 @@ def join_meeting(
     - **project_id**: Project ID to associate with this meeting
     """
     try:
+        print(f"[JOIN MEETING] Project: {request.project_id}, Bot: {request.bot_name}")
+        
         # Prepare request to MeetingBaaS
         headers = {
             "x-meeting-baas-api-key": BOT_BASS_KEY,

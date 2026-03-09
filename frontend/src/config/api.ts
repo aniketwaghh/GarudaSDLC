@@ -2,6 +2,7 @@ import axios from "axios";
 
 // Get the API base URL from environment or use localhost as fallback
 export const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+export const REQUIREMENT_SERVICE_URL = import.meta.env.VITE_REQUIREMENT_SERVICE_URL || "http://localhost:8001";
 
 // API Endpoints
 export const API_ENDPOINTS = {
@@ -29,6 +30,21 @@ export const API_ENDPOINTS = {
   // Meeting Endpoints
   MEETINGS: {
     JOIN: `${API_BASE_URL}/api/meetings/join`,
+  },
+  // Schedule Endpoints
+  SCHEDULES: {
+    CREATE: `${REQUIREMENT_SERVICE_URL}/api/schedules/`,
+    LIST: `${REQUIREMENT_SERVICE_URL}/api/schedules/`,
+    GET: (id: string) => `${REQUIREMENT_SERVICE_URL}/api/schedules/${id}`,
+    UPDATE: (id: string) => `${REQUIREMENT_SERVICE_URL}/api/schedules/${id}`,
+    DELETE: (id: string) => `${REQUIREMENT_SERVICE_URL}/api/schedules/${id}`,
+  },
+  // Chat Endpoint (RAG)
+  CHAT: `${API_BASE_URL}/api/chat/`,
+  // Video Endpoints (Requirement Service)
+  VIDEOS: {
+    STREAM: (meetingId: string) => `${REQUIREMENT_SERVICE_URL}/api/videos/${meetingId}/stream`,
+    INFO: (meetingId: string) => `${REQUIREMENT_SERVICE_URL}/api/videos/${meetingId}/info`,
   },
   // Health Check
   HEALTH: `${API_BASE_URL}/health`,

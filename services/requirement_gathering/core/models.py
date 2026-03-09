@@ -48,3 +48,33 @@ class MeetHistory(Base):
 
     def __repr__(self):
         return f"<MeetHistory(id={self.id}, bot_id={self.bot_id}, status={self.status})>"
+
+
+class MeetingSchedule(Base):
+    """Meeting schedules - tracks scheduled meeting bot joins"""
+    __tablename__ = "meeting_schedules"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(__import__('uuid').uuid4()))
+    project_id = Column(String(36), ForeignKey("projects.id"), nullable=False, index=True)
+    
+    # EventBridge scheduler details
+    schedule_name = Column(String(255), nullable=False, unique=True, index=True)  # EventBridge schedule name
+    schedule_arn = Column(String(500), nullable=True)  # EventBridge ARN
+    cron_expression = Column(String(255), nullable=False)  # Cron expression
+    
+    # Meeting details
+    meeting_url = Column(String(500), nullable=False)
+    bot_name = Column(String(255), nullable=False)
+    
+    # EventBridge target input (stored as JSON)
+    target_input = Column(JSON, nullable=False)  # Full payload sent to webhook
+    
+    # Status
+    status = Column(String(50), default="enabled", index=True)  # enabled, disabled, deleted
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<MeetingSchedule(id={self.id}, schedule_name={self.schedule_name}, status={self.status})>"
