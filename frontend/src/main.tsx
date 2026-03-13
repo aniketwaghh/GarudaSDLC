@@ -8,6 +8,7 @@ import { Provider } from 'react-redux'
 import { cognitoAuthConfig } from './config/cognito'
 import { store } from './store'
 import { Toaster } from './components/ui/toaster'
+import { TooltipProvider } from './components/ui/tooltip'
 
 const root = createRoot(document.getElementById('root')!)
 
@@ -16,8 +17,10 @@ root.render(
     <BrowserRouter>
       <Provider store={store}>
         <AuthProvider {...cognitoAuthConfig}>
-          <App />
-          <Toaster />
+          <TooltipProvider>
+            <App />
+            <Toaster />
+          </TooltipProvider>
         </AuthProvider>
       </Provider>
     </BrowserRouter>

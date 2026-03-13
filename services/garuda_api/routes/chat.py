@@ -8,6 +8,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain.messages import HumanMessage, AIMessage
@@ -29,6 +30,23 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+class Reference(BaseModel):
+    """Reference to source material"""
+    source_type: str = Field(..., description="Type: 'meeting', 'document', or 'langchain_doc'")
+    title: str = Field(..., description="Title or identifier")
+    excerpt: str = Field(..., description="Relevant excerpt from the source")
+    metadata: dict = Field(default_factory=dict, description="Additional metadata (meeting_id, timestamp, filename, url, etc.)")
+    relevance_score: Optional[float] = Field(None, description="Relevance score (0-1)")
+
+
+class StructuredChatResponse(BaseModel):
+    """Structured response with answer and references"""
+    answer: str = Field(..., description="Clear, detailed nicely formatted markdown full-length answer to the user's question")
+    references: List[Reference] = Field(default_factory=list, description="Array of source references used")
+    confidence: str = Field("high", description="Confidence level: 'high', 'medium', 'low'")
+    followup_questions: List[str] = Field(default_factory=list, description="Suggested follow-up questions")
+
+
 class ChatRequest(BaseModel):
     """Request model for RAG chat"""
     message: str = Field(..., description="User's question or query")
@@ -38,22 +56,13 @@ class ChatRequest(BaseModel):
     k: int = Field(5, ge=1, le=10, description="Number of context chunks to retrieve")
 
 
-class RetrievedChunk(BaseModel):
-    """Retrieved context chunk"""
-    text: str
-    score: float
-    bot_id: str
-    meeting_id: str
-    start_time: str
-    end_time: str
-
-
 class ChatResponse(BaseModel):
     """Response model for RAG chat"""
-    message: str = Field(..., description="AI assistant's response")
-    retrieved_chunks: List[RetrievedChunk] = Field(..., description="Retrieved context used")
+    answer: str = Field(..., description="AI assistant's response")
+    references: List[Reference] = Field(..., description="Source references used")
+    confidence: str = Field(..., description="Confidence level")
+    followup_questions: List[str] = Field(..., description="Suggested follow-up questions")
     project_id: str = Field(..., description="Project ID")
-    total_chunks: int = Field(..., description="Number of chunks retrieved")
 
 
 def create_retrieve_tool(project_id: str, meeting_id: Optional[str] = None, k: int = 5):
@@ -62,17 +71,16 @@ def create_retrieve_tool(project_id: str, meeting_id: Optional[str] = None, k: i
     @tool
     def retrieve_requirements(query: str) -> str:
         """
-        Retrieve relevant meeting transcript chunks and requirements based on a search query.
-        Use this tool to search for information from past meetings, discussions, and requirements.
+        Search meeting transcripts and requirement documents for relevant information.
+        Returns formatted results with source attribution and chunk IDs.
         
         Args:
-            query: The search query to find relevant information
+            query: Search query to find relevant information
             
         Returns:
-            Retrieved transcript chunks with context and timestamps
+            Formatted results with chunk IDs, excerpts, timestamps, and sources
         """
         try:
-            # Call the requirement_gathering service retrieve endpoint
             response = requests.post(
                 f"{REQUIREMENT_SERVICE_URL}/api/requirements/retrieve",
                 json={
@@ -84,30 +92,38 @@ def create_retrieve_tool(project_id: str, meeting_id: Optional[str] = None, k: i
                 timeout=30
             )
             response.raise_for_status()
-            
-            data = response.json()
-            results = data.get("results", [])
+            results = response.json().get("results", [])
             
             if not results:
-                return "No relevant information found in the meeting transcripts."
+                return "No relevant information found."
             
-            # Format results for the LLM (avoid template variable interpretation)
-            formatted_results = []
-            for i, chunk in enumerate(results, 1):
-                formatted_results.append(
-                    f"[Chunk {i}]\n"
-                    f"Meeting: {chunk['meeting_id']}\n"
-                    f"Time: {chunk['start_time']} - {chunk['end_time']}\n"
-                    f"Score: {chunk['score']:.4f}\n"
-                    f"Content: {chunk['text']}\n"
-                )
+            # Format results with CHUNK_IDs for LLM to reference
+            formatted_output = []
+            for idx, result in enumerate(results, start=1):
+                chunk_text = f"[CHUNK_{idx}]\n"
+                chunk_text += f"Source: {result.get('source', 'unknown')}\n"
+                
+                # Add source-specific metadata
+                if result.get('source') == 'meeting-transcripts':
+                    chunk_text += f"Meeting: {result.get('meeting_id', 'N/A')}\n"
+                    chunk_text += f"Time: {result.get('start_time', '')} - {result.get('end_time', '')}\n"
+                elif result.get('source') == 'custom_requirement':
+                    chunk_text += f"File: {result.get('filename', 'N/A')}\n"
+                    chunk_text += f"Type: {result.get('file_type', 'N/A')}\n"
+                
+                # Add truncated text content (limit to 500 chars)
+                text_content = result.get('text', '')
+                if len(text_content) > 500:
+                    text_content = text_content[:500] + "..."
+                chunk_text += f"Content: {text_content}\n"
+                chunk_text += f"Relevance Score: {result.get('score', 0):.3f}\n"
+                
+                formatted_output.append(chunk_text)
             
-            return "\n---\n".join(formatted_results)
+            return "\n\n".join(formatted_output)
             
-        except requests.exceptions.RequestException as e:
-            return f"Error retrieving requirements: {str(e)}"
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return f"Error: {str(e)}"
     
     return retrieve_requirements
 
@@ -115,76 +131,16 @@ def create_retrieve_tool(project_id: str, meeting_id: Optional[str] = None, k: i
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    RAG-powered chat endpoint that answers questions using meeting transcripts and requirements.
+    RAG-powered chat with structured responses and references.
     
-    This endpoint uses a LangChain agent with Azure OpenAI to:
-    1. Understand your question
-    2. Retrieve relevant information from meeting transcripts
-    3. Provide a detailed answer with citations
-    
-    **Example questions:**
-    - "What authentication methods were discussed?"
-    - "What are the main features for the dashboard?"
-    - "What database should we use and why?"
-    - "What performance requirements were mentioned?"
+    Returns answers with:
+    - Clear, concise response
+    - Array of references (meetings, documents, docs)
+    - Confidence level
+    - Follow-up question suggestions
     """
     try:
-        print(f"\n🤖 Processing chat request:")
-        print(f"   Project: {request.project_id}")
-        print(f"   Question: {request.message}")
-        
-        # Initialize chat model
-        model = init_chat_model(
-            model=AZURE_OPENAI_CHAT_DEPLOYMENT,
-            model_provider="azure_openai",
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_key=AZURE_OPENAI_API_KEY,
-            api_version=AZURE_OPENAI_API_VERSION,
-            temperature=0.7,
-            max_tokens=2000,
-        )
-        
-        # Create retrieve tool
-        tools = [create_retrieve_tool(request.project_id, request.meeting_id, request.k)]
-        
-        # Create agent with system prompt
-        agent = create_agent(
-            model,
-            tools=tools,
-            system_prompt="""You are a helpful AI assistant that answers questions about project requirements and meeting discussions.
-
-You have access to a tool that can search through meeting transcripts and requirements documentation.
-
-When answering questions:
-1. Use the retrieve_requirements tool to search for relevant information
-2. Provide clear, concise answers based on the retrieved information
-3. Always cite your sources by mentioning the meeting ID and timestamp when referencing specific information
-4. If the retrieved information doesn't contain the answer, say so clearly
-5. Be honest about uncertainty - don't make up information
-6. Structure your answer with clear sections if covering multiple topics
-
-Format citations like: *[Meeting: <meeting_id>, Time: <start_time>-<end_time>]*
-"""
-        )
-        
-        # Format chat history
-        chat_history = []
-        for msg in request.chat_history:
-            if msg.role == "user":
-                chat_history.append(HumanMessage(content=msg.content))
-            elif msg.role == "assistant":
-                chat_history.append(AIMessage(content=msg.content))
-        
-        # Invoke agent
-        result = agent.invoke({
-            "messages": chat_history + [HumanMessage(content=request.message)]
-        })
-        
-        # Extract the answer from the result
-        messages = result.get("messages", [])
-        answer = messages[-1].content if messages else "I couldn't generate a response."
-        
-        # Retrieve the chunks that were used (by calling retrieve one more time)
+        # First, retrieve the actual data for metadata
         retrieve_response = requests.post(
             f"{REQUIREMENT_SERVICE_URL}/api/requirements/retrieve",
             json={
@@ -196,37 +152,105 @@ Format citations like: *[Meeting: <meeting_id>, Time: <start_time>-<end_time>]*
             timeout=30
         )
         retrieve_response.raise_for_status()
-        retrieve_data = retrieve_response.json()
+        retrieved_data = retrieve_response.json().get("results", [])
         
-        # Format retrieved chunks
-        retrieved_chunks = [
-            RetrievedChunk(
-                text=chunk["text"],
-                score=chunk["score"],
-                bot_id=chunk["bot_id"],
-                meeting_id=chunk["meeting_id"],
-                start_time=chunk["start_time"],
-                end_time=chunk["end_time"]
-            )
-            for chunk in retrieve_data.get("results", [])
+        # Initialize model
+        model = init_chat_model(
+            model=AZURE_OPENAI_CHAT_DEPLOYMENT,
+            model_provider="azure_openai",
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_key=AZURE_OPENAI_API_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+            temperature=0.7,
+            max_tokens=2000,
+        )
+        
+        # Create tools
+        tools = [
+            create_retrieve_tool(request.project_id, request.meeting_id, request.k),
         ]
         
-        print(f"✅ Response generated with {len(retrieved_chunks)} chunks")
+        # Create agent with structured output
+        agent = create_agent(
+            model,
+            tools=tools,
+            response_format=ToolStrategy(StructuredChatResponse),
+            system_prompt="""You are a helpful AI assistant for project requirements.
+
+**Your task:**
+1. ALWAYS use retrieve_requirements tool to search the knowledge base before answering
+2. Use the retrieved information to answer the user's question accurately
+3. If no relevant information is found, say you couldn't find an answer in the available requirements
+
+**Important - Citing Sources:**
+- When you retrieve results, they will have [CHUNK_1], [CHUNK_2] etc. markers
+- In your references array, you MUST include the CHUNK_ID in the title field
+- Format: "CHUNK_X: [brief description]" where X is the chunk number
+- Example title: "CHUNK_1: Authentication discussion" or "CHUNK_2: Database requirements document"
+- This is CRITICAL for video playback and document linking to work properly
+
+**Guidelines:**
+- Take retrieved information with a grain of salt - there might be noise, spelling mistakes, or incomplete info
+- If information seems unclear or incomplete, try searching with different terms
+- Provide clear, detailed responses using markdown formatting
+- Be confident when you have good sources, indicate uncertainty when sources are ambiguous
+"""
+        )
+        
+        # Format chat history
+        messages = [
+            HumanMessage(content=msg.content) if msg.role == "user" else AIMessage(content=msg.content)
+            for msg in request.chat_history
+        ]
+        messages.append(HumanMessage(content=request.message))
+        
+        # Invoke agent
+        result = agent.invoke({"messages": messages})
+        structured_response: StructuredChatResponse = result.get("structured_response")
+        
+        # Enrich references with full metadata from retrieved data
+        enriched_references = []
+        for ref in structured_response.references:
+            # Extract CHUNK_ID from title (e.g., "CHUNK_1: ..." -> 1)
+            import re
+            chunk_match = re.search(r'CHUNK_(\d+)', ref.title)
+            
+            if chunk_match:
+                chunk_idx = int(chunk_match.group(1)) - 1  # Convert to 0-based index
+                if 0 <= chunk_idx < len(retrieved_data):
+                    matched_data = retrieved_data[chunk_idx]
+                    
+                    # Populate metadata based on source type
+                    if matched_data.get('source') == 'meeting-transcripts':
+                        ref.source_type = 'meeting'
+                        ref.metadata = {
+                            'bot_id': matched_data.get('bot_id'),
+                            'meeting_id': matched_data.get('meeting_id'),
+                            'start_time': matched_data.get('start_time'),
+                            'end_time': matched_data.get('end_time'),
+                        }
+                    elif matched_data.get('source') == 'custom_requirement':
+                        ref.source_type = 'document'
+                        ref.metadata = {
+                            'requirement_id': matched_data.get('requirement_id'),
+                            'filename': matched_data.get('filename'),
+                            'file_type': matched_data.get('file_type'),
+                        }
+            
+            enriched_references.append(ref)
         
         return ChatResponse(
-            message=answer,
-            retrieved_chunks=retrieved_chunks,
-            project_id=request.project_id,
-            total_chunks=len(retrieved_chunks)
+            answer=structured_response.answer,
+            references=enriched_references,
+            confidence=structured_response.confidence,
+            followup_questions=structured_response.followup_questions,
+            project_id=request.project_id
         )
         
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Failed to connect to requirement service: {str(e)}"
-        )
     except Exception as e:
         print(f"❌ Chat error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process chat request: {str(e)}"

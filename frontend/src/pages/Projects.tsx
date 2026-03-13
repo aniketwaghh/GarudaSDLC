@@ -2,7 +2,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Plus, Search } from "lucide-react";
@@ -176,55 +175,51 @@ export function Projects() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredProjects.map((project: any) => (
-              <Card
+              <div
                 key={project.id}
-                className="hover:shadow-lg transition-shadow cursor-pointer group"
+                className="bg-white rounded-lg border border-gray-200 hover:shadow-lg hover:border-blue-300 transition-all cursor-pointer group p-6"
                 onClick={() => navigate(`/workspace/${workspaceId}/project/${project.id}`)}
               >
-                <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <CardTitle className="group-hover:text-blue-600 transition-colors">
-                        {project.name}
-                      </CardTitle>
-                      <CardDescription className="mt-2">
-                        {project.description || "No description"}
-                      </CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-3">
-                    {project.code_config && Object.keys(project.code_config).length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-gray-600 mb-1">Code Config</p>
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(project.code_config).map(([key, value]) => (
-                            <Badge key={key} variant="secondary" className="text-xs">
-                              {key}: {String(value)}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {project.scrum_config && Object.keys(project.scrum_config).length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-gray-600 mb-1">Scrum Config</p>
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(project.scrum_config).map(([key, value]) => (
-                            <Badge key={key} variant="outline" className="text-xs">
-                              {key}: {String(value)}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <p className="text-xs text-gray-500 pt-2">
-                      Created {new Date(project.created_at).toLocaleDateString()}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
+                      {project.name}
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-500">
+                      {project.description || "No description"}
                     </p>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+                <div className="space-y-3">
+                  {project.code_config && Object.keys(project.code_config).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-600 mb-1">Code Config</p>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(project.code_config).map(([key, value]) => (
+                          <Badge key={key} variant="secondary" className="text-xs">
+                            {key}: {String(value)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {project.scrum_config && Object.keys(project.scrum_config).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-600 mb-1">Scrum Config</p>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(project.scrum_config).map(([key, value]) => (
+                          <Badge key={key} variant="outline" className="text-xs">
+                            {key}: {String(value)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 pt-2">
+                    Created {new Date(project.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+              </div>
             ))}
           </div>
         )}

@@ -3,25 +3,45 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Video, Calendar, Loader2, FileUp, Trash2, Plus } from "lucide-react";
+import { Video, Calendar, Loader2, FileUp, Trash2, Plus, Bot, Library, MessageSquare, Settings, FileText, LogOut } from "lucide-react";
+import logo from "@/assets/logo.png";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchProjects, setCurrentProject } from "@/store/projectSlice";
 import { fetchWorkspace } from "@/store/workspaceSlice";
 import { apiClient, API_ENDPOINTS } from "@/config/api";
 import { useToast } from "@/hooks/use-toast";
 import { Chat } from "@/pages/Chat";
+import { RequirementGathering } from "@/pages/RequirementGathering";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  SidebarInset,
+  SidebarHeader,
+  SidebarFooter,
+} from "@/components/ui/sidebar";
+import { useAuth } from "react-oidc-context";
 
 export function ProjectDetail() {
   const { workspaceId, projectId } = useParams();
   const dispatch = useAppDispatch();
+  const auth = useAuth();
   const { items: currentProject, loading, error } = useAppSelector((state) => state.projects);
   const { error: workspaceError } = useAppSelector((state) => state.workspaces);
   const { toast } = useToast();
+
+  // Active view state for sidebar navigation
+  const [activeView, setActiveView] = useState<"bots" | "requirement" | "knowledge" | "chatbot" | "config">("bots");
 
   // Requirement Gathering state
   const [meetingUrl, setMeetingUrl] = useState("");
@@ -39,6 +59,13 @@ export function ProjectDetail() {
   const [isLoadingSchedules, setIsLoadingSchedules] = useState(false);
   const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
   const [showLocalTime, setShowLocalTime] = useState(true); // Toggle for UTC/Local time display
+
+  // Custom Requirements state
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadedRequirements, setUploadedRequirements] = useState<any[]>([]);
+  const [isLoadingRequirements, setIsLoadingRequirements] = useState(false);
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
 
   // Convert date/time to AWS EventBridge cron expression
   const fetchSchedules = async () => {
@@ -302,6 +329,179 @@ export function ProjectDetail() {
     }
   };
 
+  // Custom Requirements Functions
+  const fetchCustomRequirements = async () => {
+    if (!projectId) return;
+    
+    setIsLoadingRequirements(true);
+    try {
+      const response = await apiClient.get(API_ENDPOINTS.CUSTOM_REQUIREMENTS.LIST(projectId));
+      setUploadedRequirements(response.data);
+    } catch (error: any) {
+      console.error("Failed to fetch requirements:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load uploaded documents",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingRequirements(false);
+    }
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files) {
+      const fileArray = Array.from(files);
+      
+      // Validate file types
+      const allowedTypes = ['.txt', '.pdf', '.docx', '.doc'];
+      const validFiles = fileArray.filter(file => {
+        const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+        return allowedTypes.includes(ext);
+      });
+
+      if (validFiles.length !== fileArray.length) {
+        toast({
+          title: "Invalid file type",
+          description: "Only TXT, PDF, DOCX files are allowed",
+          variant: "destructive",
+        });
+      }
+
+      setSelectedFiles(prev => [...prev, ...validFiles]);
+    }
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUploadFiles = async () => {
+    if (selectedFiles.length === 0) {
+      toast({
+        title: "No files selected",
+        description: "Please select at least one file to upload",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!projectId) {
+      toast({
+        title: "Error",
+        description: "Project ID not found",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('project_id', projectId);
+      
+      // Add user email if available
+      const auth = localStorage.getItem("oidc.user");
+      if (auth) {
+        try {
+          const user = JSON.parse(auth);
+          if (user?.profile?.email) {
+            formData.append('user_email', user.profile.email);
+          }
+        } catch (e) {
+          console.error("Failed to parse user data:", e);
+        }
+      }
+
+      // Add all files
+      selectedFiles.forEach(file => {
+        formData.append('files', file);
+      });
+
+      const response = await apiClient.post(
+        API_ENDPOINTS.CUSTOM_REQUIREMENTS.UPLOAD,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        }
+      );
+
+      const successCount = response.data.filter((r: any) => r.status === 'completed').length;
+      const failedCount = response.data.length - successCount;
+
+      toast({
+        title: "Upload Complete!",
+        description: `${successCount} file(s) processed successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
+      });
+
+      // Clear selected files
+      setSelectedFiles([]);
+      
+      // Close the upload dialog
+      setIsUploadDialogOpen(false);
+      
+      // Refresh requirements list
+      fetchCustomRequirements();
+    } catch (error: any) {
+      toast({
+        title: "Upload Failed",
+        description: error.response?.data?.detail || error.message || "An error occurred during upload",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDeleteRequirement = async (requirementId: string, filename: string) => {
+    try {
+      await apiClient.delete(API_ENDPOINTS.CUSTOM_REQUIREMENTS.DELETE(requirementId));
+      toast({
+        title: "Success!",
+        description: `"${filename}" deleted successfully`,
+      });
+      fetchCustomRequirements();
+    } catch (error: any) {
+      toast({
+        title: "Failed to delete document",
+        description: error.response?.data?.detail || error.message || "An error occurred",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const getFileIcon = (fileType: string) => {
+    switch (fileType) {
+      case 'pdf':
+        return '📄';
+      case 'docx':
+      case 'doc':
+        return '📝';
+      case 'txt':
+        return '📃';
+      default:
+        return '📄';
+    }
+  };
+
+  // Load custom requirements on mount
+  useEffect(() => {
+    if (projectId) {
+      fetchCustomRequirements();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
   const formatCronExpression = (cron: string, useLocalTime: boolean = false) => {
     // Parse cron expression and return human-readable format
     const cronMatch = cron.match(/cron\((\d+) (\d+) (.+?) (.+?) \? (.+?)\)/);
@@ -351,459 +551,174 @@ export function ProjectDetail() {
   };
 
   return (
-    <main className="max-w-7xl mx-auto px-6 py-8">
-        {/* Error Messages */}
-        {(error || workspaceError) && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-red-800">{error || workspaceError}</p>
-          </div>
-        )}
+    <SidebarProvider defaultOpen={true}>
+      <div className="flex h-screen w-full">
+        <Sidebar collapsible="icon">
+          <SidebarHeader className="border-b px-6 py-4 group-data-[collapsible=icon]:px-3">
+            <div className="flex items-center gap-3 group-data-[collapsible=icon]:justify-center">
+              <img src={logo} alt="Garuda SDLC" className="h-8 w-8 object-contain" />
+              <div className="flex flex-col group-data-[collapsible=icon]:hidden">
+                <span className="text-base font-semibold text-gray-900 leading-none">Garuda SDLC</span>
+                {currentProject?.name && (
+                  <span className="text-xs text-gray-500 leading-none mt-1">{currentProject.name}</span>
+                )}
+              </div>
+            </div>
+          </SidebarHeader>
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setActiveView("bots")}
+                      isActive={activeView === "bots"}
+                      tooltip="Bots"
+                    >
+                      <Bot className="w-4 h-4" />
+                      <span>Bots</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setActiveView("requirement")}
+                      isActive={activeView === "requirement"}
+                      tooltip="Requirement Gathering"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>Requirements</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setActiveView("knowledge")}
+                      isActive={activeView === "knowledge"}
+                      tooltip="Knowledge Base"
+                    >
+                      <Library className="w-4 h-4" />
+                      <span>Knowledge Base</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setActiveView("chatbot")}
+                      isActive={activeView === "chatbot"}
+                      tooltip="Chatbot"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>Chatbot</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setActiveView("config")}
+                      isActive={activeView === "config"}
+                      tooltip="Config"
+                    >
+                      <Settings className="w-4 h-4" />
+                      <span>Config</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </SidebarContent>
+          <SidebarFooter className="border-t">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  onClick={() => auth.removeUser()}
+                  tooltip="Sign Out"
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Sign Out</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarFooter>
+        </Sidebar>
 
-        {loading ? (
-          <div className="text-center py-12">
-            <p className="text-gray-600">Loading project...</p>
-          </div>
-        ) : (
-          <>
+        <SidebarInset className="flex-1 overflow-auto">
+          <main className="p-6">
+            <div className="flex items-center gap-4 mb-6">
+              <SidebarTrigger />
+              <h6 className="text-base font-medium text-gray-900">
+                {activeView === "bots" && "Bots"}
+                {activeView === "requirement" && "Requirement Gathering"}
+                {activeView === "knowledge" && "Knowledge Base"}
+                {activeView === "chatbot" && "Chatbot"}
+                {activeView === "config" && "Configuration"}
+              </h6>
+            </div>
+            {/* Error Messages */}
+            {(error || workspaceError) && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <p className="text-red-800">{error || workspaceError}</p>
+              </div>
+            )}
 
-            {/* Main Tabs */}
-            {currentProject && (
-              <Tabs defaultValue="bots" className="space-y-6">
-                <TabsList className="grid w-full grid-cols-5 bg-white border border-gray-200 p-1 shadow-sm">
-                  <TabsTrigger value="bots" className="data-[state=active]:bg-gray-100">Bots</TabsTrigger>
-                  <TabsTrigger value="requirement" className="data-[state=active]:bg-gray-100">Requirement Gathering</TabsTrigger>
-                  <TabsTrigger value="knowledge" className="data-[state=active]:bg-gray-100">Knowledge Base</TabsTrigger>
-                  <TabsTrigger value="chatbot" className="data-[state=active]:bg-gray-100">Chatbot</TabsTrigger>
-                  <TabsTrigger value="config" className="data-[state=active]:bg-gray-100">Config</TabsTrigger>
-                </TabsList>
+            {loading ? (
+              <div className="text-center py-12">
+                <p className="text-gray-600">Loading project...</p>
+              </div>
+            ) : currentProject && (
+              <>
+                {/* Bots View */}
+                {activeView === "bots" && (
+                  <div className="space-y-6">
+                  
+                    <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+                      <div className="text-4xl mb-4">🤖</div>
+                      <p className="text-gray-600 mb-4">No bots created yet</p>
+                      <p className="text-sm text-gray-500 mb-6">
+                        Create a bot to start recording and transcribing meetings using a unified API.
+                      </p>
+                      <Button className="bg-gray-900 hover:bg-gray-800 text-white">+ Create Bot</Button>
+                    </div>
+                  </div>
+                )}
 
-                {/* Bots Tab */}
-                <TabsContent value="bots">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Bots</CardTitle>
-                      <CardDescription>Manage and configure your bots</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-center py-12">
-                        <div className="text-4xl mb-4">🤖</div>
-                        <p className="text-gray-600 mb-4">No bots created yet</p>
-                        <p className="text-sm text-gray-500 mb-6">
-                          Create a bot to start recording and transcribing meetings using a unified API.
-                        </p>
-                        <Button className="bg-gray-900 hover:bg-gray-800 text-white">+ Create Bot</Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
+                {/* Requirement Gathering View */}
+                {activeView === "requirement" && (
+                  <RequirementGathering />
+                )}
 
-                {/* Requirement Gathering Tab */}
-                <TabsContent value="requirement">
-                  <Tabs defaultValue="join-now" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="join-now">
-                        <Video className="w-4 h-4 mr-2" />
-                        Join Now
-                      </TabsTrigger>
-                      <TabsTrigger value="schedule">
-                        <Calendar className="w-4 h-4 mr-2" />
-                        Schedule
-                      </TabsTrigger>
-                      <TabsTrigger value="custom">
-                        <FileUp className="w-4 h-4 mr-2" />
-                        Custom
-                      </TabsTrigger>
-                    </TabsList>
+                {/* Knowledge Base View */}
+                {activeView === "knowledge" && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-gray-900">Knowledge Base</h2>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Manage project documentation and knowledge
+                      </p>
+                    </div>
+                    <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+                      <div className="text-4xl mb-4">📚</div>
+                      <p className="text-gray-600 mb-4">Knowledge base is empty</p>
+                      <p className="text-sm text-gray-500 mb-6">
+                        Add documentation and knowledge articles for your team.
+                      </p>
+                      <Button className="bg-gray-900 hover:bg-gray-800 text-white">+ Add Knowledge Article</Button>
+                    </div>
+                  </div>
+                )}
 
-                    <TabsContent value="join-now">
-                      <Card>
-                        <CardHeader>
-                          <CardTitle>Join a Meeting Now</CardTitle>
-                          <CardDescription>
-                            Send a bot to join an active meeting and start recording
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                          <div className="space-y-2">
-                            <Label htmlFor="meeting-url">Meeting URL *</Label>
-                            <Input
-                              id="meeting-url"
-                              type="url"
-                              placeholder="https://zoom.us/j/123456789 or meet.google.com/xxx-yyyy-zzz"
-                              value={meetingUrl}
-                              onChange={(e) => setMeetingUrl(e.target.value)}
-                              disabled={isJoiningMeeting}
-                            />
-                            <p className="text-sm text-gray-500">
-                              Supports Zoom, Google Meet, Microsoft Teams, and more
-                            </p>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label htmlFor="bot-name">Bot Name</Label>
-                            <Input
-                              id="bot-name"
-                              type="text"
-                              placeholder="Garuda Bot"
-                              value={botName}
-                              onChange={(e) => setBotName(e.target.value)}
-                              disabled={isJoiningMeeting}
-                            />
-                            <p className="text-sm text-gray-500">
-                              This name will appear in the meeting
-                            </p>
-                          </div>
-
-                          <div className="flex justify-end">
-                            <Button
-                              onClick={handleJoinMeeting}
-                              disabled={isJoiningMeeting}
-                              className="bg-blue-600 hover:bg-blue-700"
-                            >
-                              {isJoiningMeeting ? (
-                                <>
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                  Joining...
-                                </>
-                              ) : (
-                                <>
-                                  <Video className="mr-2 h-4 w-4" />
-                                  Join Meeting
-                                </>
-                              )}
-                            </Button>
-                          </div>
-
-                          <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                            <h4 className="font-semibold text-blue-900 mb-2">How it works:</h4>
-                            <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
-                              <li>Enter the meeting URL and bot name</li>
-                              <li>Click "Join Meeting" to send the bot</li>
-                              <li>The bot will join and start recording automatically</li>
-                              <li>Recordings and transcripts will be saved to your project</li>
-                            </ol>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </TabsContent>
-
-                    <TabsContent value="schedule">
-                      <Card>
-                        <CardHeader>
-                          <div className="flex flex-row items-center justify-between">
-                            <div>
-                              <CardTitle>Scheduled Meetings</CardTitle>
-                              <CardDescription>
-                                Manage automated bot recordings for recurring meetings
-                              </CardDescription>
-                            </div>
-                            <Dialog open={isScheduleDialogOpen} onOpenChange={setIsScheduleDialogOpen}>
-                            <DialogTrigger asChild>
-                              <Button className="bg-blue-600 hover:bg-blue-700">
-                                <Plus className="mr-2 h-4 w-4" />
-                                Schedule Meeting
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                              <DialogHeader>
-                                <DialogTitle>Schedule Meeting Recording</DialogTitle>
-                                <DialogDescription>
-                                  Schedule a bot to join meetings automatically
-                                </DialogDescription>
-                              </DialogHeader>
-                              <div className="space-y-4 py-4">
-                                <div className="space-y-2">
-                                  <Label htmlFor="schedule-meeting-url">Meeting URL *</Label>
-                                  <Input
-                                    id="schedule-meeting-url"
-                                    type="url"
-                                    placeholder="https://zoom.us/j/123456789"
-                                    value={scheduleMeetingUrl}
-                                    onChange={(e) => setScheduleMeetingUrl(e.target.value)}
-                                    disabled={isCreatingSchedule}
-                                  />
-                                </div>
-
-                                <div className="space-y-2">
-                                  <Label htmlFor="schedule-bot-name">Bot Name</Label>
-                                  <Input
-                                    id="schedule-bot-name"
-                                    type="text"
-                                    placeholder="Garuda Bot"
-                                    value={scheduleBotName}
-                                    onChange={(e) => setScheduleBotName(e.target.value)}
-                                    disabled={isCreatingSchedule}
-                                  />
-                                </div>
-
-                                <div className="space-y-2">
-                                  <Label htmlFor="schedule-recurrence">Recurrence *</Label>
-                                  <Select
-                                    value={scheduleRecurrence}
-                                    onValueChange={setScheduleRecurrence}
-                                    disabled={isCreatingSchedule}
-                                  >
-                                    <SelectTrigger id="schedule-recurrence">
-                                      <SelectValue placeholder="Select recurrence" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="once">One Time Only</SelectItem>
-                                      <SelectItem value="daily">Daily</SelectItem>
-                                      <SelectItem value="weekdays">Weekdays (Mon-Fri)</SelectItem>
-                                      <SelectItem value="weekly">Weekly</SelectItem>
-                                      <SelectItem value="monthly">Monthly</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-
-                                {scheduleRecurrence === "once" && (
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                      <Label htmlFor="schedule-date">Date *</Label>
-                                      <Input
-                                        id="schedule-date"
-                                        type="date"
-                                        value={scheduleDate}
-                                        onChange={(e) => setScheduleDate(e.target.value)}
-                                        disabled={isCreatingSchedule}
-                                        min={new Date().toISOString().split('T')[0]}
-                                      />
-                                    </div>
-                                    <div className="space-y-2">
-                                      <Label htmlFor="schedule-time">Time *</Label>
-                                      <Input
-                                        id="schedule-time"
-                                        type="time"
-                                        value={scheduleTime}
-                                        onChange={(e) => setScheduleTime(e.target.value)}
-                                        disabled={isCreatingSchedule}
-                                      />
-                                    </div>
-                                    <p className="text-sm text-gray-500 col-span-2">
-                                      Select date and time in your local timezone
-                                    </p>
-                                  </div>
-                                )}
-
-                                {(scheduleRecurrence === "weekly" || scheduleRecurrence === "monthly") && (
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                      <Label htmlFor="schedule-start-date">Starting From (Optional)</Label>
-                                      <Input
-                                        id="schedule-start-date"
-                                        type="date"
-                                        value={scheduleDate}
-                                        onChange={(e) => setScheduleDate(e.target.value)}
-                                        disabled={isCreatingSchedule}
-                                        min={new Date().toISOString().split('T')[0]}
-                                      />
-                                    </div>
-                                    <div className="space-y-2">
-                                      <Label htmlFor="schedule-time">Time *</Label>
-                                      <Input
-                                        id="schedule-time"
-                                        type="time"
-                                        value={scheduleTime}
-                                        onChange={(e) => setScheduleTime(e.target.value)}
-                                        disabled={isCreatingSchedule}
-                                      />
-                                    </div>
-                                    <p className="text-sm text-gray-500 col-span-2">
-                                      {scheduleRecurrence === "weekly" 
-                                        ? "Select date for day of week and time"
-                                        : "Select date for day of month and time"}
-                                    </p>
-                                  </div>
-                                )}
-
-                                {(scheduleRecurrence === "daily" || scheduleRecurrence === "weekdays") && (
-                                  <div className="space-y-2">
-                                    <Label htmlFor="schedule-time">Time *</Label>
-                                    <Input
-                                      id="schedule-time"
-                                      type="time"
-                                      value={scheduleTime}
-                                      onChange={(e) => setScheduleTime(e.target.value)}
-                                      disabled={isCreatingSchedule}
-                                    />
-                                    <p className="text-sm text-gray-500">
-                                      Enter time in your local timezone
-                                    </p>
-                                  </div>
-                                )}
-
-                                <div className="flex justify-end gap-2">
-                                  <Button
-                                    variant="outline"
-                                    onClick={() => setIsScheduleDialogOpen(false)}
-                                    disabled={isCreatingSchedule}
-                                  >
-                                    Cancel
-                                  </Button>
-                                  <Button
-                                    onClick={handleScheduleMeeting}
-                                    disabled={isCreatingSchedule}
-                                    className="bg-blue-600 hover:bg-blue-700"
-                                  >
-                                    {isCreatingSchedule ? (
-                                      <>
-                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        Creating...
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Calendar className="mr-2 h-4 w-4" />
-                                        Create Schedule
-                                      </>
-                                    )}
-                                  </Button>
-                                </div>
-                              </div>
-                            </DialogContent>
-                          </Dialog>
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          {isLoadingSchedules ? (
-                            <div className="flex items-center justify-center py-8">
-                              <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                            </div>
-                          ) : schedules.length === 0 ? (
-                            <div className="text-center py-12">
-                              <Calendar className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                              <h3 className="text-lg font-semibold text-gray-900 mb-2">No Scheduled Meetings</h3>
-                              <p className="text-gray-500 mb-4">
-                                Schedule a bot to automatically join your recurring meetings
-                              </p>
-                              <Button
-                                onClick={() => setIsScheduleDialogOpen(true)}
-                                className="bg-blue-600 hover:bg-blue-700"
-                              >
-                                <Plus className="mr-2 h-4 w-4" />
-                                Schedule Your First Meeting
-                              </Button>
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-end">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => setShowLocalTime(!showLocalTime)}
-                                  className="text-sm"
-                                >
-                                  {showLocalTime ? "🌍 Local Time" : "🌐 UTC Time"}
-                                </Button>
-                              </div>
-                              <div className="overflow-x-auto">
-                              <table className="w-full">
-                                <thead>
-                                  <tr className="border-b">
-                                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Meeting URL</th>
-                                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Bot Name</th>
-                                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Schedule</th>
-                                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Status</th>
-                                    <th className="text-right py-3 px-4 font-semibold text-gray-700">Actions</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {schedules.map((schedule) => (
-                                    <tr key={schedule.id} className="border-b hover:bg-gray-50">
-                                      <td className="py-3 px-4">
-                                        <a
-                                          href={schedule.meeting_url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-blue-600 hover:underline truncate block max-w-xs"
-                                        >
-                                          {schedule.meeting_url}
-                                        </a>
-                                      </td>
-                                      <td className="py-3 px-4 text-gray-700">{schedule.bot_name}</td>
-                                      <td className="py-3 px-4 text-sm text-gray-600">
-                                        {formatCronExpression(schedule.cron_expression, showLocalTime)}
-                                      </td>
-                                      <td className="py-3 px-4">
-                                        <Badge variant={schedule.status === "enabled" ? "default" : "secondary"}>
-                                          {schedule.status}
-                                        </Badge>
-                                      </td>
-                                      <td className="py-3 px-4 text-right">
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => handleDeleteSchedule(schedule.id)}
-                                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                        >
-                                          <Trash2 className="h-4 w-4" />
-                                        </Button>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                              </div>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    </TabsContent>
-
-                    <TabsContent value="custom">
-                      <Card>
-                        <CardHeader>
-                          <CardTitle>Upload Custom Documents</CardTitle>
-                          <CardDescription>
-                            Upload PDF documents and other files for requirement analysis
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="text-center py-12 text-gray-500">
-                            <FileUp className="w-16 h-16 mx-auto mb-4 text-gray-400" />
-                            <p className="text-lg font-medium">Coming Soon</p>
-                            <p className="mt-2 text-sm">
-                              Upload PDFs, Word documents, and other files to extract requirements
-                            </p>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </TabsContent>
-                  </Tabs>
-                </TabsContent>
-
-                {/* Knowledge Base Tab */}
-                <TabsContent value="knowledge">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Knowledge Base</CardTitle>
-                      <CardDescription>Manage project documentation and knowledge</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-center py-12">
-                        <div className="text-4xl mb-4">📚</div>
-                        <p className="text-gray-600 mb-4">Knowledge base is empty</p>
-                        <p className="text-sm text-gray-500 mb-6">
-                          Add documentation and knowledge articles for your team.
-                        </p>
-                        <Button className="bg-gray-900 hover:bg-gray-800 text-white">+ Add Knowledge Article</Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-
-                {/* Chatbot Tab */}
-                <TabsContent value="chatbot" className="mt-0">
+                {/* Chatbot View */}
+                {activeView === "chatbot" && (
                   <Chat />
-                </TabsContent>
+                )}
 
-                {/* Config Tab */}
-                <TabsContent value="config">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Configuration</CardTitle>
-                      <CardDescription>Configure code repository and integrations</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-6">
+                {/* Config View */}
+                {activeView === "config" && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-gray-900">Configuration</h2>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Configure code repository and integrations
+                      </p>
+                    </div>
+                    <div className="bg-white rounded-lg border border-gray-200 p-6 space-y-6">
                       {/* Code Config */}
                       {currentProject.code_config && Object.keys(currentProject.code_config).length > 0 ? (
                         <div>
@@ -843,13 +758,14 @@ export function ProjectDetail() {
                           <Button variant="outline">+ Configure Jira</Button>
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-              </Tabs>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
-          </>
-        )}
-    </main>
+          </main>
+        </SidebarInset>
+      </div>
+    </SidebarProvider>
   );
 }

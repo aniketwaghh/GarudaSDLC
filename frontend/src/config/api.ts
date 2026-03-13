@@ -30,6 +30,7 @@ export const API_ENDPOINTS = {
   // Meeting Endpoints
   MEETINGS: {
     JOIN: `${API_BASE_URL}/api/meetings/join`,
+    DELETE: (meetingId: string) => `${REQUIREMENT_SERVICE_URL}/api/meetings/${meetingId}`,
   },
   // Schedule Endpoints
   SCHEDULES: {
@@ -45,6 +46,17 @@ export const API_ENDPOINTS = {
   VIDEOS: {
     STREAM: (meetingId: string) => `${REQUIREMENT_SERVICE_URL}/api/videos/${meetingId}/stream`,
     INFO: (meetingId: string) => `${REQUIREMENT_SERVICE_URL}/api/videos/${meetingId}/info`,
+  },
+  // Custom Requirements Endpoints
+  CUSTOM_REQUIREMENTS: {
+    UPLOAD: `${API_BASE_URL}/api/custom-requirements/upload`,
+    LIST: (projectId: string) => `${API_BASE_URL}/api/custom-requirements/list/${projectId}`,
+    DELETE: (requirementId: string) => `${API_BASE_URL}/api/custom-requirements/${requirementId}`,
+    VIEW: (requirementId: string) => `${API_BASE_URL}/api/custom-requirements/view/${requirementId}`,
+  },
+  // Unified Requirements List (combines meetings and custom requirements)
+  REQUIREMENTS: {
+    LIST_ALL: (projectId: string) => `${REQUIREMENT_SERVICE_URL}/api/requirements/list/${projectId}`,
   },
   // Health Check
   HEALTH: `${API_BASE_URL}/health`,

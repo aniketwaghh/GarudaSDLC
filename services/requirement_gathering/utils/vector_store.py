@@ -5,12 +5,16 @@ Uses AWS S3 Vectors with Azure OpenAI embeddings.
 
 import csv
 import os
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_aws.vectorstores.s3_vectors import AmazonS3Vectors
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from core.models import ChunkContent
 
 
 class TranscriptChunker:
@@ -157,8 +161,10 @@ class MeetingVectorStore:
         )
         
         # Initialize S3 Vectors store
-        # Non-filterable metadata keys are for display-only fields (formatted timestamps)
-        # All other metadata fields (type, project_id, meeting_id, etc.) will be filterable
+        # Non-filterable metadata keys are for display-only fields
+        # These fields don't count toward the 2048 byte filterable metadata limit
+        # Filterable fields (ONLY what we query by): source, project_id, meeting_id
+        # Everything else is non-filterable for maximum safety
         # NOTE: This configuration is set during index creation and cannot be changed later
         self.vector_store = AmazonS3Vectors(
             vector_bucket_name=vector_bucket_name,
@@ -169,7 +175,22 @@ class MeetingVectorStore:
             aws_secret_access_key=aws_secret_access_key,
             distance_metric="cosine",
             create_index_if_not_exist=True,
-            non_filterable_metadata_keys=['start_time_formatted', 'end_time_formatted'],
+            page_content_metadata_key=None,  # Don't store content in metadata to avoid 2048 byte limit
+            non_filterable_metadata_keys=[
+                # Chunk reference (stored in DB)
+                'chunk_id',
+                # Meeting metadata (display only)
+                'start_time_formatted', 
+                'end_time_formatted',
+                'bot_id',
+                'duration_ms',
+                # Custom requirement metadata (display only)
+                'requirement_id',
+                'file_type',
+                'chunk_index',
+                'filename',
+                'total_chunks'
+            ],
         )
         
         self.chunker = TranscriptChunker()
@@ -180,6 +201,7 @@ class MeetingVectorStore:
         bot_id: str,
         meeting_id: str,
         project_id: str,
+        db: Session,
     ) -> int:
         """
         Process transcript TSV file, create chunks, and store in vector database.
@@ -189,6 +211,7 @@ class MeetingVectorStore:
             bot_id: Bot ID from MeetingBaaS
             meeting_id: Meeting record ID from database
             project_id: Project ID
+            db: Database session for storing chunk content
             
         Returns:
             Number of chunks stored
@@ -200,16 +223,29 @@ class MeetingVectorStore:
         if not chunks:
             return 0
         
-        # Convert chunks to LangChain documents with metadata
+        # Store chunks in database and prepare documents for vectors
         documents = []
         for idx, chunk in enumerate(chunks):
+            # Generate unique chunk ID
+            chunk_id = str(uuid.uuid4())
+            
+            # Store actual content in database
+            chunk_content = ChunkContent(
+                chunk_id=chunk_id,
+                content=chunk['text']
+            )
+            db.add(chunk_content)
+            
+            # Create vector document WITH actual text content for embeddings
+            # Even though content is in DB, we need text here for Azure OpenAI embeddings
             doc = Document(
-                page_content=chunk['text'],
+                page_content=chunk['text'],  # Include actual text for proper embeddings
                 metadata={
-                    'type': 'meeting-transcripts',
-                    'bot_id': bot_id,
-                    'meeting_id': meeting_id,
+                    'chunk_id': chunk_id,  # Reference to DB content
+                    'source': 'meeting-transcripts',  # Consistent naming with chat.py
                     'project_id': project_id,
+                    'meeting_id': meeting_id,
+                    'bot_id': bot_id,
                     'chunk_index': idx,
                     'start_time_ms': chunk['start'],
                     'end_time_ms': chunk['end'],
@@ -220,6 +256,9 @@ class MeetingVectorStore:
             )
             documents.append(doc)
         
+        # Commit chunk content to database
+        db.commit()
+        
         # Store in S3 Vectors
         # Generate IDs for documents (format: {meeting_id}_{chunk_index})
         ids = [f"{meeting_id}_{idx}" for idx in range(len(documents))]
@@ -227,37 +266,92 @@ class MeetingVectorStore:
         
         return len(documents)
     
+    async def add_text(
+        self,
+        text: str,
+        metadata: Dict[str, Any],
+        db: Session,
+        doc_id: Optional[str] = None
+    ) -> str:
+        """
+        Add a single text chunk to vector store.
+        
+        Args:
+            text: Text content to add
+            metadata: Metadata for the chunk
+            db: Database session for storing chunk content
+            doc_id: Optional document ID (auto-generated if not provided)
+            
+        Returns:
+            Document ID
+        """
+        # Generate unique chunk ID
+        chunk_id = str(uuid.uuid4())
+        
+        # Store actual content in database
+        chunk_content = ChunkContent(
+            chunk_id=chunk_id,
+            content=text
+        )
+        db.add(chunk_content)
+        db.commit()
+        
+        # Add chunk_id to metadata
+        metadata_with_chunk = {**metadata, 'chunk_id': chunk_id}
+        
+        # Create document WITH actual text content for embeddings
+        # Even though content is in DB, we need text here for Azure OpenAI embeddings
+        doc = Document(
+            page_content=text,  # Include actual text for proper embeddings
+            metadata=metadata_with_chunk
+        )
+        
+        # Generate ID if not provided
+        if not doc_id:
+            doc_id = f"{metadata.get('requirement_id', uuid.uuid4())}_{metadata.get('chunk_index', 0)}"
+        
+        # Add to vector store
+        self.vector_store.add_documents([doc], ids=[doc_id])
+        
+        return doc_id
+    
     def retrieve_requirements(
         self,
         query: str,
         project_id: str,
+        db: Session,
         k: int = 5,
+        source_type: Optional[str] = None,  # 'meeting' or 'custom_requirement'
         meeting_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve relevant transcript chunks based on query.
+        Retrieve relevant chunks based on query.
         
         Args:
             query: Search query
             project_id: Project ID to filter results
             k: Number of results to return (default: 5)
+            source_type: Filter by source type ('meeting-transcripts' or 'custom_requirement')
             meeting_id: Optional meeting ID to filter specific meeting
             
         Returns:
             List of relevant chunks with metadata and scores
         """
-        # Build metadata filter using AWS S3 Vectors filter syntax
-        # See: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
-        
-        # Try simple filter first - just project_id
+        # Build metadata filter - always filter by project
         filter_dict = {'project_id': {'$eq': project_id}}
         
+        # Add additional filters if provided
+        filters = []
+        if source_type:
+            filters.append({'source': {'$eq': source_type}})
         if meeting_id:
-            # Add meeting_id filter
+            filters.append({'meeting_id': {'$eq': meeting_id}})
+        
+        if filters:
             filter_dict = {
                 '$and': [
                     {'project_id': {'$eq': project_id}},
-                    {'meeting_id': {'$eq': meeting_id}}
+                    *filters
                 ]
             }
         
@@ -272,26 +366,207 @@ class MeetingVectorStore:
             filter=filter_dict
         )
         
-        print(f"✅ Retrieved {len(results)} filtered results from AWS S3 Vectors")
+        print(f"✅ Retrieved {results} filtered results from AWS S3 Vectors")
         
-        # Format results
+        # Fetch actual content from database for all chunks
+        chunk_ids = [doc.metadata.get('chunk_id') for doc, _ in results if doc.metadata.get('chunk_id')]
+        print(f"🔍 Looking up chunk_ids in database: {chunk_ids}")
+        
+        chunk_contents = {}
+        if chunk_ids:
+            chunks_from_db = db.query(ChunkContent).filter(ChunkContent.chunk_id.in_(chunk_ids)).all()
+            chunk_contents = {chunk.chunk_id: chunk.content for chunk in chunks_from_db}
+            print(f"✅ Found {len(chunk_contents)} chunks in database")
+            if len(chunk_contents) < len(chunk_ids):
+                missing_ids = set(chunk_ids) - set(chunk_contents.keys())
+                print(f"⚠️  Missing chunks in database: {missing_ids}")
+        
+        # Format results based on source type
         formatted_results = []
         for doc, score in results:
-            formatted_results.append({
-                'text': doc.page_content,
+            metadata = doc.metadata
+            source = metadata.get('source', metadata.get('type'))  # Support both field names
+            
+            # Get actual text content from database or page_content
+            chunk_id = metadata.get('chunk_id')
+            text_content = chunk_contents.get(chunk_id) if chunk_id else None
+            
+            # If not found in DB, try page_content from vector (for newer vectors with text)
+            if not text_content and doc.page_content:
+                text_content = doc.page_content
+                print(f"ℹ️  Using page_content for chunk {chunk_id}")
+            
+            # If still no content, log warning
+            if not text_content:
+                print(f"⚠️  No text content found for chunk {chunk_id} (source: {source})")
+                text_content = "[Content not available]"
+            
+            result = {
+                'text': text_content,
                 'score': score,
-                'metadata': doc.metadata,
-                'type': doc.metadata.get('type'),
-                'bot_id': doc.metadata.get('bot_id'),
-                'meeting_id': doc.metadata.get('meeting_id'),
-                'project_id': doc.metadata.get('project_id'),
-                'start_time': doc.metadata.get('start_time_formatted'),
-                'end_time': doc.metadata.get('end_time_formatted'),
-                'duration_ms': doc.metadata.get('duration_ms'),
-            })
+                'metadata': metadata,
+                'source': source,
+                'project_id': metadata.get('project_id'),
+            }
+            
+            # Add source-specific fields
+            if source == 'meeting-transcripts' or source == 'meeting':
+                result.update({
+                    'bot_id': metadata.get('bot_id'),
+                    'meeting_id': metadata.get('meeting_id'),
+                    'start_time': metadata.get('start_time_formatted'),
+                    'end_time': metadata.get('end_time_formatted'),
+                    'duration_ms': metadata.get('duration_ms'),
+                })
+            elif source == 'custom_requirement':
+                result.update({
+                    'requirement_id': metadata.get('requirement_id'),
+                    'filename': metadata.get('filename'),
+                    'file_type': metadata.get('file_type'),
+                    'file_s3_key': metadata.get('file_s3_key'),
+                    'chunk_index': metadata.get('chunk_index'),
+                    'total_chunks': metadata.get('total_chunks'),
+                })
+            
+            formatted_results.append(result)
+            print("formated res: ", formatted_results)
         
         return formatted_results
     
+    def delete_vectors_by_requirement(
+        self,
+        requirement_id: str,
+        db: Session
+    ) -> int:
+        """
+        Delete all vectors for a specific custom requirement.
+        
+        Args:
+            requirement_id: Custom requirement ID
+            db: Database session
+            
+        Returns:
+            Number of vectors deleted
+        """
+        try:
+            print(f"🗑️  Deleting vectors for requirement: {requirement_id}")
+            
+            # Query for chunks with this requirement_id
+            # AWS S3 Vectors doesn't support delete by metadata, so we need to track IDs
+            # For custom requirements, IDs are: {requirement_id}_{chunk_index}
+            from core.models import CustomRequirement
+            
+            requirement = db.query(CustomRequirement).filter(
+                CustomRequirement.id == requirement_id
+            ).first()
+            
+            if not requirement:
+                print(f"⚠️  Requirement not found: {requirement_id}")
+                return 0
+            
+            total_chunks = requirement.total_chunks or 0
+            deleted_count = 0
+            
+            # Delete vectors by their IDs
+            for idx in range(total_chunks):
+                doc_id = f"{requirement_id}_{idx}"
+                try:
+                    self.vector_store.delete([doc_id])
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"⚠️  Failed to delete vector {doc_id}: {str(e)}")
+            
+            # Delete chunk content from database
+            chunk_ids = []
+            # We need to query ChunkContent to find chunks with this requirement_id in metadata
+            # Since we don't have a direct link, we'll need to query via vector store results
+            
+            print(f"✓ Deleted {deleted_count} vectors for requirement")
+            return deleted_count
+            
+        except Exception as e:
+            print(f"✗ Failed to delete vectors: {str(e)}")
+            return 0
+    
+    def delete_vectors_by_meeting(
+        self,
+        meeting_id: str,
+        db: Session
+    ) -> int:
+        """
+        Delete all vectors for a specific meeting.
+        
+        Args:
+            meeting_id: Meeting ID
+            db: Database session
+            
+        Returns:
+            Number of vectors deleted
+        """
+        try:
+            print(f"🗑️  Deleting vectors for meeting: {meeting_id}")
+            
+            # Query for chunks with this meeting_id
+            from core.models import MeetHistory
+            
+            meeting = db.query(MeetHistory).filter(
+                MeetHistory.id == meeting_id
+            ).first()
+            
+            if not meeting:
+                print(f"⚠️  Meeting not found: {meeting_id}")
+                return 0
+            
+            total_chunks = meeting.total_chunks or 0
+            deleted_count = 0
+            
+            # Delete vectors by their IDs (format: {meeting_id}_{chunk_index})
+            for idx in range(total_chunks):
+                doc_id = f"{meeting_id}_{idx}"
+                try:
+                    self.vector_store.delete([doc_id])
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"⚠️  Failed to delete vector {doc_id}: {str(e)}")
+            
+            print(f"✓ Deleted {deleted_count} vectors for meeting")
+            return deleted_count
+            
+        except Exception as e:
+            print(f"✗ Failed to delete vectors: {str(e)}")
+            return 0
+    
+    def delete_chunk_contents(
+        self,
+        chunk_ids: List[str],
+        db: Session
+    ) -> int:
+        """
+        Delete chunk contents from database.
+        
+        Args:
+            chunk_ids: List of chunk IDs to delete
+            db: Database session
+            
+        Returns:
+            Number of chunks deleted
+        """
+        try:
+            from core.models import ChunkContent
+            
+            deleted = db.query(ChunkContent).filter(
+                ChunkContent.chunk_id.in_(chunk_ids)
+            ).delete(synchronize_session=False)
+            
+            db.commit()
+            print(f"✓ Deleted {deleted} chunk contents from database")
+            return deleted
+            
+        except Exception as e:
+            print(f"✗ Failed to delete chunk contents: {str(e)}")
+            db.rollback()
+            return 0
+
     @staticmethod
     def _format_timestamp(ms: int) -> str:
         """

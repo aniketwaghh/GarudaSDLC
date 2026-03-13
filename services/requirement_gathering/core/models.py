@@ -33,10 +33,13 @@ class MeetHistory(Base):
     mp4_url = Column(String(1000), nullable=True)
     audio_url = Column(String(1000), nullable=True)
     
-    # Local file paths
-    mp4_local_path = Column(String(500), nullable=True)
-    audio_local_path = Column(String(500), nullable=True)
-    transcript_local_path = Column(String(500), nullable=True)
+    # S3 storage keys
+    mp4_s3_key = Column(String(500), nullable=True)
+    audio_s3_key = Column(String(500), nullable=True)
+    transcript_s3_key = Column(String(500), nullable=True)
+    
+    # Processing metadata
+    total_chunks = Column(Integer, default=0)  # Number of vector chunks created from transcript
     
     # Meeting metadata
     speakers = Column(JSON, nullable=True, default=[])
@@ -78,3 +81,46 @@ class MeetingSchedule(Base):
 
     def __repr__(self):
         return f"<MeetingSchedule(id={self.id}, schedule_name={self.schedule_name}, status={self.status})>"
+
+class CustomRequirement(Base):
+    """Custom requirements uploaded by users (docs, PDFs, txt files)"""
+    __tablename__ = "custom_requirements"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(__import__('uuid').uuid4()))
+    project_id = Column(String(36), ForeignKey("projects.id"), nullable=False, index=True)
+    
+    # File information
+    filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)  # txt, pdf, docx
+    file_size = Column(Integer, nullable=False)  # bytes
+    file_s3_key = Column(String(500), nullable=False)  # S3 storage key
+    
+    # Processing metadata
+    total_chunks = Column(Integer, default=0)  # Number of vector chunks created
+    status = Column(String(50), default="processing", index=True)  # processing, completed, failed
+    
+    # Timestamps
+    uploaded_by = Column(String(255), nullable=True)  # User email/ID from Cognito
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<CustomRequirement(id={self.id}, filename={self.filename}, status={self.status})>"
+
+class ChunkContent(Base):
+    """
+    Chunk content storage - stores actual text content separately from vector metadata.
+    This keeps vector metadata minimal to avoid AWS S3 Vectors' 2048 byte filterable metadata limit.
+    
+    Used for both:
+    - Meeting transcript chunks
+    - Custom requirement document chunks
+    """
+    __tablename__ = "chunk_contents"
+
+    chunk_id = Column(String(36), primary_key=True)  # UUID stored in vector metadata
+    content = Column(Text, nullable=False)  # Actual text content
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self):
+        return f"<ChunkContent(chunk_id={self.chunk_id}, content_length={len(self.content)})>"

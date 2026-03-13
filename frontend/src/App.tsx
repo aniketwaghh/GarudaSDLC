@@ -6,7 +6,6 @@ import { Home } from "@/pages/Home"
 import { Workspaces } from "@/pages/Workspaces"
 import { Projects } from "@/pages/Projects"
 import { ProjectDetail } from "@/pages/ProjectDetail"
-import { RequirementGathering } from "@/pages/RequirementGathering"
 import { Chat } from "@/pages/Chat"
 import { NotFound } from "@/pages/NotFound"
 
@@ -48,24 +47,6 @@ function App() {
         />
 
         <Route
-          path="/workspace/:workspaceId/project/:projectId"
-          element={
-            <ProtectedRoute>
-              <ProjectDetail />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/workspace/:workspaceId/project/:projectId/requirements"
-          element={
-            <ProtectedRoute>
-              <RequirementGathering />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
           path="/workspace/:workspaceId/project/:projectId/chat"
           element={
             <ProtectedRoute>
@@ -75,7 +56,17 @@ function App() {
         />
       </Route>
 
-      {/* Routes without Layout (404) */}
+      {/* Routes without Layout */}
+      <Route
+        path="/workspace/:workspaceId/project/:projectId"
+        element={
+          <ProtectedRoute>
+            <ProjectDetail />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* 404 Routes */}
       <Route path="/404" element={<NotFound />} />
       <Route path="*" element={<NotFound />} />
     </Routes>

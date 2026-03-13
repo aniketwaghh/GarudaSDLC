@@ -2,7 +2,6 @@ import { useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Plus, Search } from "lucide-react";
@@ -167,31 +166,27 @@ export function Workspaces() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredWorkspaces.map((workspace: any) => (
-              <Card
+              <div
                 key={workspace.id}
-                className="hover:shadow-lg transition-shadow cursor-pointer group"
+                className="bg-white rounded-lg border border-gray-200 hover:shadow-lg hover:border-blue-300 transition-all cursor-pointer group p-6"
                 onClick={() => navigate(`/workspace/${workspace.id}`)}
               >
-                <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <CardTitle className="group-hover:text-blue-600 transition-colors">
-                        {workspace.name}
-                      </CardTitle>
-                      <CardDescription className="mt-2">
-                        {workspace.description || "No description"}
-                      </CardDescription>
-                    </div>
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
+                      {workspace.name}
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-500">
+                      {workspace.description || "No description"}
+                    </p>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2">
-                    <Badge variant="secondary">
-                      {new Date(workspace.created_at).toLocaleDateString()}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
+                </div>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">
+                    {new Date(workspace.created_at).toLocaleDateString()}
+                  </Badge>
+                </div>
+              </div>
             ))}
           </div>
         )}

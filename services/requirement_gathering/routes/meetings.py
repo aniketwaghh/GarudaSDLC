@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core import models
 from schemas import MeetJoinRequest, MeetJoinResponse
+from utils.vector_store import get_vector_store
+from utils.s3_storage import get_s3_manager
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -101,3 +103,84 @@ def join_meeting(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/{meeting_id}")
+async def delete_meeting(
+    meeting_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a meeting completely:
+    - Vectors from S3 Vectors
+    - Chunk contents from database
+    - Recording files from S3 (video, audio, transcripts)
+    - Database record
+    """
+    meeting = db.query(models.MeetHistory).filter(
+        models.MeetHistory.id == meeting_id
+    ).first()
+    
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    
+    try:
+        print(f"🗑️  Deleting meeting: {meeting.bot_name} ({meeting_id})")
+        
+        # 1. Delete vectors from vector store
+        vector_store = get_vector_store()
+        try:
+            deleted_vectors = vector_store.delete_vectors_by_meeting(meeting_id, db)
+            print(f"✓ Deleted {deleted_vectors} vectors")
+        except Exception as e:
+            print(f"⚠️  Failed to delete vectors: {str(e)}")
+        
+        # 2. Delete files from S3
+        s3_manager = get_s3_manager()
+        files_to_delete = []
+        
+        if meeting.mp4_s3_key:
+            files_to_delete.append(meeting.mp4_s3_key)
+        if meeting.audio_s3_key:
+            files_to_delete.append(meeting.audio_s3_key)
+        if meeting.transcript_s3_key:
+            files_to_delete.append(meeting.transcript_s3_key)
+        
+        # Also try to delete other transcript files (txt, srt, vtt, tsv)
+        if meeting.bot_id:
+            try:
+                # List and delete all files for this bot_id
+                bot_files = s3_manager.list_files(meeting.bot_id)
+                for file_info in bot_files:
+                    files_to_delete.append(file_info['key'])
+            except Exception as e:
+                print(f"⚠️  Failed to list bot files: {str(e)}")
+        
+        # Delete all collected S3 files
+        deleted_files = 0
+        for s3_key in files_to_delete:
+            try:
+                s3_manager.delete_file(s3_key)
+                deleted_files += 1
+            except Exception as e:
+                print(f"⚠️  Failed to delete {s3_key}: {str(e)}")
+        
+        print(f"✓ Deleted {deleted_files} files from S3")
+        
+        # 3. Delete database record
+        db.delete(meeting)
+        db.commit()
+        print(f"✓ Deleted database record")
+        
+        return {
+            "status": "deleted",
+            "meeting_id": meeting_id,
+            "bot_name": meeting.bot_name,
+            "deleted_vectors": deleted_vectors if 'deleted_vectors' in locals() else 0,
+            "deleted_files": deleted_files
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"✗ Deletion failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
