@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for Core Agent Service
+  postgres:
+    image: postgres:16-alpine
+    container_name: garuda-core-postgres
+    ports:
+      - "5433:5432"  # Map to 5433 on host to avoid conflicts with other PostgreSQL instances
+    environment:
+      - POSTGRES_USER=garuda
+      - POSTGRES_PASSWORD=garuda_password
+      - POSTGRES_DB=garuda_checkpoints
+    volumes:
+      - core_postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U garuda"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  core_postgres_data:
+    driver: local
